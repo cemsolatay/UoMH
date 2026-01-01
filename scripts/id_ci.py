@@ -18,14 +18,22 @@ import zlib
 
 import numpy as np
 import torch
+from torch.utils.data import DataLoader
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from two_step_zoo.datasets.image import get_raw_image_tensors, image_tensors_to_dataset
-from two_step_zoo.id_estimator.mle import mle_inverse_singlek
-from two_step_zoo.id_estimator.utils import dotdict
+from two_step_zoo.id_estimator.estimator import MLEIDEstimator
+
+
+class _NullWriter:
+    def write_checkpoint(self, *args, **kwargs):
+        return None
+
+    def write_scalar(self, *args, **kwargs):
+        return None
 
 
 DEFAULT_DATASETS = ["mnist", "fashion-mnist", "svhn", "cifar10", "cifar100"]
@@ -36,14 +44,25 @@ def _stable_hash(text):
 
 
 def _estimate_id(dataset, *, k, batch_size, num_workers, pfix):
-    args = dotdict({
+    cluster_cfg = {
+        "num_clusters": 1,
+        "id_estimates_save": None,
+        "id_estimate_num_datapoints_per_class": -1,
+        "max_k": k,
         "id_est_batch_size": batch_size,
         "n_id_est_workers": num_workers,
         "eval_every_k": False,
+        "latent_k": k,
         "pfix": pfix,
-    })
-    _, inv_mle, _ = mle_inverse_singlek(dataset, k1=k, args=args)
-    return float(inv_mle)
+    }
+    estimator = MLEIDEstimator(cluster_cfg, writer=_NullWriter())
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers
+    )
+    return float(estimator.estimate_id(loader))
 
 
 def _mean_ci(values, confidence):
@@ -73,11 +92,22 @@ def _ensure_dir(path):
     os.makedirs(path, exist_ok=True)
 
 
-def _plot_dataset(dataset, stats, *, ks, confidence, output_dir):
+def _plot_dataset(dataset, stats, *, ks, confidence, output_dir, class_names):
     class_ids = sorted(stats.keys())
+    if not class_ids:
+        return
+
+    class_score = {}
+    for class_id in class_ids:
+        means = [stats[class_id]["per_k"][k]["mean"] for k in ks]
+        class_score[class_id] = float(np.mean(means))
+
+    class_ids = sorted(class_ids, key=lambda cid: class_score[cid])
+    if len(class_ids) > 10:
+        class_ids = class_ids[:5] + class_ids[-5:]
+
     num_classes = len(class_ids)
-    fig_w = 16 if num_classes > 20 else 10
-    fig, ax = plt.subplots(figsize=(fig_w, 6))
+    fig, ax = plt.subplots(figsize=(10, 6))
 
     base_x = np.arange(num_classes)
     width = 0.8 / max(len(ks), 1)
@@ -95,15 +125,14 @@ def _plot_dataset(dataset, stats, *, ks, confidence, output_dir):
         ax.bar(base_x + offset, means, width=width, yerr=yerr, capsize=2, label=f"k={k}")
 
     ax.set_title(f"{dataset} class ID with {int(confidence * 100)}% CI")
-    ax.set_xlabel("class")
-    ax.set_ylabel("intrinsic dimension estimate")
+    ax.set_xlabel("Class")
+    ax.set_ylabel("ID estimate")
     ax.legend(ncol=min(len(ks), 5), fontsize=8, frameon=False)
 
-    if num_classes > 20:
-        ax.set_xticks([])
-    else:
-        ax.set_xticks(base_x)
-        ax.set_xticklabels(class_ids)
+    ax.set_xticks(base_x)
+    labels = [class_names[cid] if cid < len(class_names) else str(cid) for cid in class_ids]
+    ax.set_xticklabels(labels)
+    ax.tick_params(axis="x", labelrotation=45)
 
     fig.tight_layout()
     fig_path = os.path.join(output_dir, f"{dataset}_class_id_ci.png")
@@ -142,11 +171,12 @@ def main():
     for dataset in datasets:
         print(f"Loading dataset: {dataset}")
         try:
-            images, labels = get_raw_image_tensors(
+            images, labels, class_names = get_raw_image_tensors(
                 dataset_name=dataset,
                 train=True,
                 data_root=args.data_root,
-                class_ind=-1
+                class_ind=-1,
+                return_class_names=True
             )
         except ValueError as exc:
             print(f"Skipping unsupported dataset {dataset}: {exc}")
@@ -167,13 +197,7 @@ def main():
         dataset_results = {}
         for class_id in range(num_classes):
             indices = class_indices[class_id]
-            if len(indices) == 0:
-                print(f"Skipping empty class {class_id} in {dataset}")
-                continue
-
             subsample_size = args.subsample_cifar100 if dataset == "cifar100" else args.subsample
-            subsample_size = min(subsample_size, len(indices))
-
             estimates_by_k = {k: [] for k in ks}
             for rep in range(args.repeats):
                 seed = args.seed + _stable_hash(dataset) + class_id * 1000 + rep
@@ -248,7 +272,14 @@ def main():
                         k_stats["ci_high"],
                     ])
 
-        _plot_dataset(dataset, dataset_results, ks=ks, confidence=args.confidence, output_dir=dataset_out_dir)
+        _plot_dataset(
+            dataset,
+            dataset_results,
+            ks=ks,
+            confidence=args.confidence,
+            output_dir=dataset_out_dir,
+            class_names=class_names,
+        )
 
     summary_path = os.path.join(args.output_dir, "all_datasets_class_id_ci.json")
     with open(summary_path, "w") as f:

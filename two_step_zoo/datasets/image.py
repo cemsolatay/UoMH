@@ -81,24 +81,28 @@ def image_tensors_to_dataset(dataset_name, dataset_role, images, labels, transfo
     labels = labels.long()
     return SupervisedDataset(dataset_name, dataset_role, images, labels, transforms)
 
-# Returns tuple of form `(images, labels)`. Both are uint8 tensors.
-# `images` has shape `(nimages, nchannels, nrows, ncols)`, and has
-# entries in {0, ..., 255}
-def get_raw_image_tensors(dataset_name, train, data_root, class_ind):
+# Returns tuple of form `(images, labels)` (or `(images, labels, class_names)` if
+# `return_class_names=True`). Both tensors are uint8; `images` has shape
+# `(nimages, nchannels, nrows, ncols)`, and entries in {0, ..., 255}.
+def get_raw_image_tensors(dataset_name, train, data_root, class_ind, return_class_names=False):
     data_dir = os.path.join(data_root, dataset_name)
+    class_names = None
 
     if dataset_name == "cifar10":
         dataset = torchvision.datasets.CIFAR10(root=data_dir, train=train, download=True)
+        class_names = getattr(dataset, "classes", None)
         images = torch.tensor(dataset.data).permute((0, 3, 1, 2))
         labels = torch.tensor(dataset.targets)
     
     elif dataset_name == "cifar100":
         dataset = torchvision.datasets.CIFAR100(root=data_dir, train=train, download=True)
+        class_names = getattr(dataset, "classes", None)
         images = torch.tensor(dataset.data).permute((0, 3, 1, 2))
         labels = torch.tensor(dataset.targets)
 
     elif dataset_name == "svhn":
         dataset = torchvision.datasets.SVHN(root=data_dir, split="train" if train else "test", download=True)
+        class_names = getattr(dataset, "classes", None)
         images = torch.tensor(dataset.data)
         labels = torch.tensor(dataset.labels)
 
@@ -108,6 +112,7 @@ def get_raw_image_tensors(dataset_name, train, data_root, class_ind):
             "fashion-mnist": torchvision.datasets.FashionMNIST
         }[dataset_name]
         dataset = dataset_class(root=data_dir, train=train, download=True)
+        class_names = getattr(dataset, "classes", None)
         images = dataset.data.unsqueeze(1)
         labels = dataset.targets
 
@@ -120,7 +125,20 @@ def get_raw_image_tensors(dataset_name, train, data_root, class_ind):
         labels = labels[class_idxs]
         images = images[class_idxs]
 
-    return images.to(torch.uint8), labels.to(torch.uint8)
+    images = images.to(torch.uint8)
+    labels = labels.to(torch.uint8)
+
+    if not return_class_names:
+        return images, labels
+
+    if class_names is None:
+        if dataset_name == "svhn":
+            class_names = [str(i) for i in range(10)]
+        else:
+            num_classes = int(labels.max().item()) + 1
+            class_names = [str(i) for i in range(num_classes)]
+
+    return images, labels, class_names
 
 def get_torchvision_datasets(dataset_name, data_root, valid_fraction, class_ind, transforms):
     images, labels = get_raw_image_tensors(dataset_name, train=True, data_root=data_root, class_ind=class_ind)
