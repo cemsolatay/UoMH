@@ -52,9 +52,7 @@ DATASET_LR_MILESTONES = {
     "cifar100": [60, 120, 160],
 }
 
-DATASET_VAL_FRACTION = {
-    "cifar100": 0.001,
-}
+DATASET_VAL_FRACTION = 0.1
 
 
 class ClassifyDataset(Dataset):
@@ -334,6 +332,11 @@ def train_one_run(model, train_loader, val_loader, test_loader, device, epochs, 
             best_per_class, best_per_class_counts, best_test = evaluate_per_class(
                 model, test_loader, device, num_classes
             )
+            print(
+                f"Epoch {epoch + 1}: val_acc={val_acc:.3f} | test_acc={best_test:.3f} (new best)"
+            )
+        else:
+            print(f"Epoch {epoch + 1}: val_acc={val_acc:.3f}")
 
     return {
         "best_val_acc": best_val,
@@ -371,12 +374,11 @@ def main():
             print(f"Skipping unknown dataset {dataset}")
             continue
 
-        val_fraction = DATASET_VAL_FRACTION.get(dataset, 0.01)
         train_loader, val_loader, test_loader, class_names, train_images, train_labels = build_loaders(
             dataset=dataset,
             data_root=args.data_root,
             batch_size=args.batch_size,
-            val_fraction=val_fraction
+            val_fraction=DATASET_VAL_FRACTION
         )
         num_classes = int(train_labels.max().item()) + 1
 
