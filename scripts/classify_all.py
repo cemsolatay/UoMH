@@ -392,7 +392,6 @@ def main():
         )
         id_sum = sum(id_estimates) if sum(id_estimates) > 0 else 1.0
         class_weights = [w / id_sum for w in id_estimates]
-        class_weights = [w * num_classes for w in class_weights]
 
         dataset_dir = os.path.join(args.results_dir, dataset, args.model)
         os.makedirs(dataset_dir, exist_ok=True)
